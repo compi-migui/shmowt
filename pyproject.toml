@@ -4,7 +4,7 @@ version = "0.1.0"
 description = ""
 authors = ["Miguel Garcia <dev@migarcia.cat>"]
 readme = "README.md"
-packages = [{include = "tfg_scratchpad", from = "src"}]
+packages = [{include = "shmowt", from = "src"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.13" # Imposed by river 0.21.0
