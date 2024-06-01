@@ -1,52 +1,127 @@
-import os
 import functools
+import os
+from pathlib import Path
+import tempfile
 
+from joblib import Memory
 from sklearn.decomposition import PCA
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.model_selection import KFold
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+
 
 from shmowt.config import get_config
-from shmowt.data import Data
+from shmowt.data import load_raw_data, _load_tiny
 
 
-def class_mapper(n):
-    # Our dataset doesn't have metadata for what class each experiment belongs to,
-    # so work it out from the order they're provided in.
-    classes = [0, 1, 2, 3, 4]
-    if n < 2460:
-        return classes[0] # healthy
-    elif 2460 <= n < 2460 + 820:
-        return classes[1]
-    elif 2460 <= n < 2460 + 820*2:
-        return classes[2]
-    elif 2460 <= n < 2460 + 820*3:
-        return classes[3]
-    elif 2460 <= n < 2460 + 820*4:
-        return classes[4]
+def accuracy(tn, fp, fn, tp):
+    return (tp+tn)/(tp+fp+fn+tn)
 
 
-def insert_class_labels(data):
-    data.insert(0, 'class', [class_mapper(i) for i in range(data.shape[0])])
+def precision(tn, fp, fn, tp):
+    return tp/(tp+fp)
 
 
-def scale(data):
-    # scaled value = (value - column_mean) / column_stdev
-    scaler = StandardScaler()
-    # We don't want to scale the class label, so skip that column
-    data[data.columns.drop("class")] = scaler.fit_transform(data[data.columns.drop("class")])
-    return data
+def sensitivity(tn, fp, fn, tp):
+    # aka recall
+    return tp/(tp+fn)
 
 
-def pca(components=8):
-    pca = PCA(n_components=8)  # TODO: more components, comparing results for different numbers of components
-    pca.fit(data[data.columns.drop("class")])  # excludes class label column
+def f1_score(ppv, tpr):
+    return 2*(ppv*tpr)/(ppv+tpr)
+
+
+def specificity(tn, fp, fn, tp):
+    return tn/(tn+fp)
+
+
+def metrics_from_confusion_matrix(conf_matrix):
+    metrics = {"acc": 0, "ppv": 0, "tpr": 0, "f1": 0, "tnr": 0}
+    for cls in range(len(conf_matrix)):
+        total = sum(sum(conf_matrix))
+        predicted_positives = sum(conf_matrix[:, cls])
+        predicted_negatives = total - predicted_positives
+        tp = conf_matrix[cls][cls]
+        fp = predicted_positives - tp
+        fn = sum(conf_matrix[cls]) - tp
+        tn = predicted_negatives - fn
+        metrics["acc"] += accuracy(tn, fp, fn, tp)
+        metrics["ppv"] += precision(tn, fp, fn, tp)
+        metrics["tpr"] += sensitivity(tn, fp, fn, tp)
+        metrics["tnr"] += specificity(tn, fp, fn, tp)
+    for metric in metrics:
+        metrics[metric] = metrics[metric] / len(conf_matrix)
+    metrics["f1"] = f1_score(metrics["ppv"], metrics["tpr"])
+
+    return metrics
+
 
 
 if __name__ == '__main__':
     config = get_config(os.getenv('SHMOWT_CONFIG'))
-    data_path = config.get('data', 'path')
-    cache_path = config.get('cache', 'path')
 
-    data_raw = Data(name='raw', path=data_path)
-    insert_class_labels(data_raw.data)
-    data_scaled = Data(name='scaled', path=cache_path, data_func=functools.partial(scale, data_raw.data))
-    data_scaled.save()
+    cache_path = config.get('cache', 'path', fallback=None)
+    if cache_path is None:
+        cache_path = Path(tempfile.gettempdir()) / 'shmowt-cache'
+        cache_path.mkdir(exist_ok=True)
+    memory = Memory(cache_path, verbose=config.get('debug', 'verbosity_memory', fallback=0))
+
+    tiny_data = config.getboolean('debug', 'tiny_data', fallback=False)
+    data_path = config.get('data', 'path')
+    if tiny_data:
+        load_tiny_cache = memory.cache(_load_tiny, verbose=config.get('debug', 'verbosity_memory', fallback=0))
+        data_raw = load_tiny_cache(data_path)
+    else:
+        data_raw = load_raw_data(data_path)
+
+    # PCA(n_components=0.85, svd_solver='full')
+    pipeline_knn = Pipeline(
+        [
+            ('column_scaling', StandardScaler()),
+            ('dim_reduction', PCA(svd_solver='full')),
+            ('classification', KNeighborsClassifier()), # TODO: could do passthrough here
+        ],
+        memory=memory,
+        verbose=config.getboolean('debug', 'verbose_pipelines', fallback=False)
+    )
+    # pipeline_svm = Pipeline(
+    #     [
+    #         ('column_scaling', StandardScaler()),
+    #         ('dim_reduction', PCA(svd_solver='full')),
+    #         ('classification', SVC())
+    #     ],
+    #     memory=config.getboolean('debug', 'verbose_pipelines', fallback=False),
+    # )
+    #
+    # param_grid = {
+    #     "dim_reduction__n_components": [0.85, 0.90, 0.95],
+    #     "classification__n_neighbors": 10 #np.logspace(-4, 4, 4),
+    # }
+
+    pipeline_knn.set_params(
+        dim_reduction__n_components=8,
+        classification__n_neighbors=5
+    )
+
+    pipeline = pipeline_knn
+    eval_indicators = dict()
+    split_metrics = []
+    kfold_splits = 5
+    kf = KFold(n_splits=kfold_splits)
+    for train, test in kf.split(data_raw):
+        pipeline.fit(data_raw.loc[train, data_raw.columns.drop("class")], data_raw.loc[train, 'class'])
+
+        predicted = pipeline.predict(data_raw.loc[test, data_raw.columns.drop("class")])
+        true = data_raw.loc[test, 'class']
+
+        conf_matrix = confusion_matrix(true, predicted)
+        split_metrics.append(metrics_from_confusion_matrix(conf_matrix))
+
+    for metric in split_metrics[0]:
+        # Evaluator indicators are averaged from the indicators of all splits
+        eval_indicators[metric] = sum([x[metric] for x in split_metrics]) / len(split_metrics)
+    print(eval_indicators)
+
