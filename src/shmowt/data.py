@@ -13,7 +13,7 @@ def load_raw_data(data_path):
     return data
 
 
-def _load_tiny(data_path, n=100):
+def _load_tiny(data_path, n=200):
     '''
     Meant for quick development only. Take only a tiny sample of the dataset.
     :param data_path:

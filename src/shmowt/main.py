@@ -4,12 +4,13 @@ from pathlib import Path
 import tempfile
 
 from joblib import Memory
+import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import KFold
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from sklearn.svm import SVC
 
 
@@ -59,8 +60,96 @@ def metrics_from_confusion_matrix(conf_matrix):
     return metrics
 
 
+def noop_core(X):
+    return X
 
-if __name__ == '__main__':
+
+def noop():
+    """
+    Used to trick sklearn into caching the final transformer in a pipeline.
+    See https://github.com/scikit-learn/scikit-learn/issues/23112
+    """
+    return FunctionTransformer(noop_core)
+
+
+def reproduce_paper(data_raw, memory, verbose_pipelines=False):
+    """
+    This procedure applies column scaling and dimensionality reduction to the entire dataset, and only applies
+    cross-validation to the classifier. Same as the paper does.
+    :param data_raw:
+    :param memory:
+    :param verbose_pipelines:
+    :return:
+    """
+    # Table 5 in the paper
+    results = []
+    # results = pd.DataFrame(columns=['variance', 'pc_num', 'neighbors', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
+    pipeline_overfit = Pipeline(
+        [
+            ('column_scaling', StandardScaler()),
+            ('dim_reduction', PCA(svd_solver='full')),
+            ('classification', noop())
+        ],
+        memory=memory,
+        verbose=verbose_pipelines
+    )
+    pipeline_overfit.set_output(transform='pandas')
+
+    pipeline_predict_only = Pipeline(
+        [
+            ('classification', KNeighborsClassifier())
+        ],
+        memory=memory,
+        verbose=verbose_pipelines
+    )
+
+    pipeline_predict_only.set_params(
+        classification__n_neighbors=5
+    )
+
+    for variance in [0.85, 0.90, 0.95]:
+        pipeline_overfit.set_params(
+            dim_reduction__n_components=variance
+        )
+
+        data = pipeline_overfit.fit_transform(data_raw.loc[:, data_raw.columns.drop("class")])
+        # Adding back the class label makes the data consistent with the not-overfit case, avoiding special case handling.
+        data.insert(0, 'class', data_raw.loc[:, 'class'])
+        params = {'variance': variance, 'pc_num': foo}
+        eval_indicators = cross_validation(data=data, pipeline=pipeline_predict_only)
+        results.append(params | eval_indicators)
+
+
+    return
+
+
+def cross_validation(data, pipeline):
+    eval_indicators = dict()
+    split_metrics = []
+    # Unlike the paper, this pipeline uses holdouts and cross-validation for the entire process, including scaling
+    # and dimensionality reduction. Putting it aside for now for the sake of 100% reproduction of the paper's
+    # results.
+    # TODO: Come back to this later.
+    kfold_splits = 5
+    kf = KFold(n_splits=kfold_splits)
+    for train, test in kf.split(data):
+        pipeline.fit(data.loc[train, data.columns.drop("class")], data.loc[train, 'class'])
+        # pipeline.fit(data_pca[train], data_raw.loc[train, 'class'])
+
+        predicted = pipeline.predict(data.loc[test, data.columns.drop("class")])
+        # predicted = pipeline.predict(data_pca[test])
+        true = data.loc[test, 'class']
+
+        conf_matrix = confusion_matrix(true, predicted)
+        split_metrics.append(metrics_from_confusion_matrix(conf_matrix))
+
+    for metric in split_metrics[0]:
+        # Evaluator indicators are averaged from the indicators of all splits
+        eval_indicators[metric] = sum([x[metric] for x in split_metrics]) / len(split_metrics)
+    return eval_indicators
+
+
+def main():
     config = get_config(os.getenv('SHMOWT_CONFIG'))
 
     cache_path = config.get('cache', 'path', fallback=None)
@@ -87,45 +176,17 @@ if __name__ == '__main__':
         memory=memory,
         verbose=config.getboolean('debug', 'verbose_pipelines', fallback=False)
     )
-    # pipeline_svm = Pipeline(
-    #     [
-    #         ('column_scaling', StandardScaler()),
-    #         ('dim_reduction', PCA(svd_solver='full')),
-    #         ('classification', SVC())
-    #     ],
-    #     memory=config.getboolean('debug', 'verbose_pipelines', fallback=False),
-    # )
-    #
-    # param_grid = {
-    #     "dim_reduction__n_components": [0.85, 0.90, 0.95],
-    #     "classification__n_neighbors": 10 #np.logspace(-4, 4, 4),
-    # }
+
 
     pipeline_knn.set_params(
-        dim_reduction__n_components=8,
+        dim_reduction__n_components=0.85,
         classification__n_neighbors=5
     )
 
-    pipeline = pipeline_knn
-    eval_indicators = dict()
-    split_metrics = []
-    # Unlike the paper, this pipeline uses holdouts and cross-validation for the entire process, including scaling
-    # and dimensionality reduction. Putting it aside for now for the sake of 100% reproduction of the paper's
-    # results.
-    # TODO: Come back to this later.
-    kfold_splits = 5
-    kf = KFold(n_splits=kfold_splits)
-    for train, test in kf.split(data_raw):
-        pipeline.fit(data_raw.loc[train, data_raw.columns.drop("class")], data_raw.loc[train, 'class'])
-
-        predicted = pipeline.predict(data_raw.loc[test, data_raw.columns.drop("class")])
-        true = data_raw.loc[test, 'class']
-
-        conf_matrix = confusion_matrix(true, predicted)
-        split_metrics.append(metrics_from_confusion_matrix(conf_matrix))
-
-    for metric in split_metrics[0]:
-        # Evaluator indicators are averaged from the indicators of all splits
-        eval_indicators[metric] = sum([x[metric] for x in split_metrics]) / len(split_metrics)
+    eval_indicators = reproduce_paper(data_raw, memory, config.getboolean('debug', 'verbose_pipelines', fallback=False))
     print(eval_indicators)
 
+
+
+if __name__ == '__main__':
+    main()
