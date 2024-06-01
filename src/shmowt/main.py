@@ -109,6 +109,10 @@ if __name__ == '__main__':
     pipeline = pipeline_knn
     eval_indicators = dict()
     split_metrics = []
+    # Unlike the paper, this pipeline uses holdouts and cross-validation for the entire process, including scaling
+    # and dimensionality reduction. Putting it aside for now for the sake of 100% reproduction of the paper's
+    # results.
+    # TODO: Come back to this later.
     kfold_splits = 5
     kf = KFold(n_splits=kfold_splits)
     for train, test in kf.split(data_raw):
