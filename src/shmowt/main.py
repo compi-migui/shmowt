@@ -95,18 +95,25 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         verbose=verbose_pipelines
     )
     pipeline_overfit.set_output(transform='pandas')
-    # TODO: do the rest of these once we have better memory management
-    explained_variances = [0.85]  # ,0.90, 0.95]
+    explained_variances = [0.85, 0.90, 0.95]
 
-    pipeline_predict_only = Pipeline(
+    pipeline_knn_only = Pipeline(
         [
             ('classification', KNeighborsClassifier())
         ],
         memory=memory,
         verbose=verbose_pipelines
     )
-    # TODO: do the rest of these once we have better memory management
-    neighbors = [1, 5, 10, 25, 50]  # , 100, 150, 200, 250, 300, 500]
+    neighbors = [1, 5, 10, 25, 50, 100, 150, 200, 250, 300, 500]
+
+    pipeline_svc_only = Pipeline(
+        [
+            ('classification', SVC(C=1.0, kernel='poly', degree=2, coef0=0))
+        ],
+        memory=memory,
+        verbose=verbose_pipelines
+    )
+    kernel_scale = [5, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300]
 
     for variance in explained_variances:
         pipeline_overfit.set_params(
@@ -118,16 +125,26 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         # handling.
         data.insert(0, 'class', data_raw.loc[:, 'class'])
         for k in neighbors:
+            break  # TODO: remove this once we properly avoid repeating runs
             if k > data.shape[0]*(kfold_splits-1)/kfold_splits:
                 # Can't use more neighbors than there are training samples
                 continue
             params = {'variance': variance, 'pc_num': pipeline_overfit.named_steps['dim_reduction'].n_components_,
                       'neighbors': k}
-            pipeline_predict_only.set_params(
+            pipeline_knn_only.set_params(
                 classification__n_neighbors=k
             )
-            eval_indicators = cross_validation(data=data, pipeline=pipeline_predict_only, kfold_splits=kfold_splits)
+            eval_indicators = cross_validation(data=data, pipeline=pipeline_knn_only, kfold_splits=kfold_splits)
             results.append(params | eval_indicators)
+        for r in kernel_scale:
+            params = {'variance': variance, 'pc_num': pipeline_overfit.named_steps['dim_reduction'].n_components_,
+                      'kernel_scale': r}
+            pipeline_svc_only.set_params(
+                classification__gamma=1/(r**2)
+            )
+            eval_indicators = cross_validation(data=data, pipeline=pipeline_svc_only, kfold_splits=kfold_splits)
+            results.append(params | eval_indicators)
+            print(results[-1])  # TODO: delete
     return pd.DataFrame.from_records(results)
 
 
@@ -139,7 +156,7 @@ def cross_validation(data, pipeline, kfold_splits):
     # results.
     # TODO: Come back to this later.
     kfold_splits = 5
-    kf = KFold(n_splits=kfold_splits)
+    kf = KFold(n_splits=kfold_splits, shuffle=True, random_state=0)
     for train, test in kf.split(data):
         pipeline.fit(data.loc[train, data.columns.drop("class")], data.loc[train, 'class'])
         # pipeline.fit(data_pca[train], data_raw.loc[train, 'class'])
