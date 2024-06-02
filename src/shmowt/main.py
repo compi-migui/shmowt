@@ -83,6 +83,7 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
     """
     # Table 5 in the paper
     results = []
+    kfold_splits = 5
     # results = pd.DataFrame(columns=['variance', 'pc_num', 'neighbors', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
     pipeline_overfit = Pipeline(
         [
@@ -94,6 +95,8 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         verbose=verbose_pipelines
     )
     pipeline_overfit.set_output(transform='pandas')
+    # TODO: do the rest of these once we have better memory management
+    explained_variances = [0.85]  # ,0.90, 0.95]
 
     pipeline_predict_only = Pipeline(
         [
@@ -102,28 +105,33 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         memory=memory,
         verbose=verbose_pipelines
     )
+    # TODO: do the rest of these once we have better memory management
+    neighbors = [1, 5, 10, 25, 50]  # , 100, 150, 200, 250, 300, 500]
 
-    pipeline_predict_only.set_params(
-        classification__n_neighbors=5
-    )
-
-    for variance in [0.85, 0.90, 0.95]:
+    for variance in explained_variances:
         pipeline_overfit.set_params(
             dim_reduction__n_components=variance
         )
 
         data = pipeline_overfit.fit_transform(data_raw.loc[:, data_raw.columns.drop("class")])
-        # Adding back the class label makes the data consistent with the not-overfit case, avoiding special case handling.
+        # Adding back the class label makes the data consistent with the not-overfit case, avoiding special case
+        # handling.
         data.insert(0, 'class', data_raw.loc[:, 'class'])
-        params = {'variance': variance, 'pc_num': foo}
-        eval_indicators = cross_validation(data=data, pipeline=pipeline_predict_only)
-        results.append(params | eval_indicators)
+        for k in neighbors:
+            if k > data.shape[0]*(kfold_splits-1)/kfold_splits:
+                # Can't use more neighbors than there are training samples
+                continue
+            params = {'variance': variance, 'pc_num': pipeline_overfit.named_steps['dim_reduction'].n_components_,
+                      'neighbors': k}
+            pipeline_predict_only.set_params(
+                classification__n_neighbors=k
+            )
+            eval_indicators = cross_validation(data=data, pipeline=pipeline_predict_only, kfold_splits=kfold_splits)
+            results.append(params | eval_indicators)
+    return pd.DataFrame.from_records(results)
 
 
-    return
-
-
-def cross_validation(data, pipeline):
+def cross_validation(data, pipeline, kfold_splits):
     eval_indicators = dict()
     split_metrics = []
     # Unlike the paper, this pipeline uses holdouts and cross-validation for the entire process, including scaling
@@ -185,6 +193,7 @@ def main():
 
     eval_indicators = reproduce_paper(data_raw, memory, config.getboolean('debug', 'verbose_pipelines', fallback=False))
     print(eval_indicators)
+    pass
 
 
 
