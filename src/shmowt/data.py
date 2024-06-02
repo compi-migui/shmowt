@@ -7,7 +7,9 @@ import pandas as pd
 def load_raw_data(data_path):
     with h5py.File(data_path, 'r') as data_file:
         data_all = data_file['datacompleto']
-        data = pd.DataFrame(data_all).transpose()
+        # data = pd.DataFrame(data_all).transpose()
+        # TODO: Get rid of this workaround once we have cleaner data
+        data = _truncate_data(data_all)
     # noinspection PyTypeChecker
     data.insert(0, 'class', [class_mapper(i) for i in range(data.shape[0])])
     return data
@@ -22,6 +24,17 @@ def _load_tiny(data_path, n=200):
     '''
     data_all = load_raw_data(data_path)
     return data_all.sample(n=n, weights='class', random_state=0, ignore_index=True)
+
+
+def _truncate_data(data_all):
+    # Keep only the first 403 samples in each trial.
+    # Works around the fact we're using a data set with too large trials.
+    columns = 58008  # row leng
+    L = 2417  # samples per sensor per trial
+    keep = 403  # how many samples per sensor per trial to actually keep
+    keep_columns = [i for i in range(columns) if i % L < keep]
+    data = pd.DataFrame(data_all[keep_columns,]).transpose()
+    return data
 
 
 def class_mapper(n):
