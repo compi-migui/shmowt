@@ -9,4 +9,9 @@ It may eventually go beyond that by adding new features, to be determined.
 
 ## Usage
 
-SHMOWT_CONFIG environment variable should contain the path to config.ini.
+```bash
+git clone git@github.com:compi-migui/shmowt.git
+cd shmowt
+poetry install
+SHMOWT_CONFIG=~/shmowt/contrib/config.ini poetry run 
+```
