@@ -45,9 +45,9 @@ def class_mapper(n):
         return classes[0] # healthy
     elif 2460 <= n < 2460 + 820:
         return classes[1]
-    elif 2460 <= n < 2460 + 820*2:
+    elif 2460 + 820 <= n < 2460 + 820*2:
         return classes[2]
-    elif 2460 <= n < 2460 + 820*3:
+    elif 2460 + 820*2 <= n < 2460 + 820*3:
         return classes[3]
-    elif 2460 <= n < 2460 + 820*4:
+    elif 2460 + 820*3 <= n < 2460 + 820*4:
         return classes[4]
