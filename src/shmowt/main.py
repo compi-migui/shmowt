@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 
 from joblib import Memory
+import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
@@ -16,6 +17,8 @@ from sklearn.svm import SVC
 
 from shmowt.config import get_config
 from shmowt.data import load_raw_data, _load_tiny
+
+config = get_config(os.getenv('SHMOWT_CONFIG'))
 
 
 def accuracy(tn, fp, fn, tp):
@@ -82,7 +85,7 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
     :return:
     """
     # Table 5 in the paper
-    results = []
+    results = {"knn": [], "svm": []}
     kfold_splits = 5
     # results = pd.DataFrame(columns=['variance', 'pc_num', 'neighbors', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
     pipeline_overfit = Pipeline(
@@ -95,7 +98,9 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         verbose=verbose_pipelines
     )
     pipeline_overfit.set_output(transform='pandas')
-    explained_variances = [0.85, 0.90, 0.95]
+    # TODO: break this down
+    # explained_variances = [0.85, 0.90, 0.95]
+    explained_variances = [0.90]
 
     pipeline_knn_only = Pipeline(
         [
@@ -124,8 +129,8 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         # Adding back the class label makes the data consistent with the not-overfit case, avoiding special case
         # handling.
         data.insert(0, 'class', data_raw.loc[:, 'class'])
+        save_pca_scatter_plots(pca_data=data, prefix='reproduce')
         for k in neighbors:
-            break  # TODO: remove this once we properly avoid repeating runs
             if k > data.shape[0]*(kfold_splits-1)/kfold_splits:
                 # Can't use more neighbors than there are training samples
                 continue
@@ -135,7 +140,8 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
                 classification__n_neighbors=k
             )
             eval_indicators = cross_validation(data=data, pipeline=pipeline_knn_only, kfold_splits=kfold_splits)
-            results.append(params | eval_indicators)
+            results["knn"].append(params | eval_indicators)
+        save_indicators_plot(results=results["knn"], method="knn", prefix="reproduce")
         for r in kernel_scale:
             params = {'variance': variance, 'pc_num': pipeline_overfit.named_steps['dim_reduction'].n_components_,
                       'kernel_scale': r}
@@ -143,9 +149,69 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
                 classification__gamma=1/(r**2)
             )
             eval_indicators = cross_validation(data=data, pipeline=pipeline_svc_only, kfold_splits=kfold_splits)
-            results.append(params | eval_indicators)
-            print(results[-1])  # TODO: delete
+            results["svm"].append(params | eval_indicators)
+        save_indicators_plot(results=results["svm"], method="svm", prefix="reproduce")
     return pd.DataFrame.from_records(results)
+
+
+def save_pca_scatter_plots(pca_data, prefix=''):
+    """
+    Create and save scatter plots of PCA data
+    :param pca_data: Array-like of data that already went through PCA
+    :param prefix: string prepended to the saved figure filename
+    :return:
+    """
+    for component_pair in [(0, 1), (0, 2), (0, 13), (0, 24)]:
+        save_pca_scatter_plot(pca_data=pca_data, component_pair=component_pair, prefix=prefix)
+
+
+def save_pca_scatter_plot(pca_data, component_pair, prefix=''):
+    """
+    Create a single scatter plot of Xth vs Yth principal component
+    :param pca_data: Array-like of data that already went through PCA
+    :param component_pair: tuple of two ints, the principal components to plot. 0 is the first principal component
+    :param prefix: string prepended to the saved figure filename
+    :return:
+    """
+    #
+    fig, ax = plt.subplots(figsize=(3.1, 2.4),
+                           layout='constrained',
+                           frameon=False,  # No background color
+                           )
+    color_mapping = zip(['blue', 'purple', 'red', 'olive', 'lime'], [0, 1, 2, 3, 4])
+    for color, dataset in color_mapping:
+        ax.scatter(
+            pca_data.loc[pca_data['class'] == dataset, f"pca{component_pair[0]}"],
+            pca_data.loc[pca_data['class'] == dataset, f"pca{component_pair[1]}"],
+            s=5,
+            color=color,
+            alpha=0.8,
+            label=dataset
+        )
+    # plt.legend(loc="best", shadow=False, scatterpoints=1, markerscale=3)
+    ax.set_xlabel(f"Principal component {component_pair[0]+1}")  # 0 is the 1st principal component and so on
+    ax.set_ylabel(f"Principal component {component_pair[1]+1}")
+    ax.grid(True)
+    save_path = (Path(config.get('out', 'path'))
+                 / f"{prefix}-pca-plot-{component_pair[0]+1}-vs-{component_pair[1]+1}.png")
+    fig.savefig(save_path,
+                format='png',
+                transparent=False,
+                dpi=100,
+                bbox_inches='tight')
+
+
+def save_indicators_plot(results, method, prefix=''):
+    """
+    Figures 10 and 11 in the Sensors paper
+    """
+    fig, ax = plt.subplots(figsize=(4, 2.6),
+                           layout='constrained',
+                           frameon=False,  # No background color
+                           )
+    names = ["acc", "ppv", "trp", "f1", "tnr"]
+    values = []
+    ax.plot(names, values) # TODO: work this out after formatting results as DataFrame for easier slicing
 
 
 def cross_validation(data, pipeline, kfold_splits):
@@ -175,7 +241,6 @@ def cross_validation(data, pipeline, kfold_splits):
 
 
 def main():
-    config = get_config(os.getenv('SHMOWT_CONFIG'))
 
     cache_path = config.get('cache', 'path', fallback=None)
     if cache_path is None:
