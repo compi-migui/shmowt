@@ -87,7 +87,8 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
     # Table 5 in the paper
     results = {"knn": [], "svm": []}
     kfold_splits = 5
-    # results = pd.DataFrame(columns=['variance', 'pc_num', 'neighbors', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
+    results["knn"] = pd.DataFrame(columns=['variance', 'pc_num', 'k', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
+    results["svm"] = pd.DataFrame(columns=['variance', 'pc_num', 'ρ', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
     pipeline_overfit = Pipeline(
         [
             ('column_scaling', StandardScaler()),
@@ -98,9 +99,8 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         verbose=verbose_pipelines
     )
     pipeline_overfit.set_output(transform='pandas')
-    # TODO: break this down
-    # explained_variances = [0.85, 0.90, 0.95]
-    explained_variances = [0.90]
+
+    explained_variances = [0.85, 0.90, 0.95]
 
     pipeline_knn_only = Pipeline(
         [
@@ -109,7 +109,7 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         memory=memory,
         verbose=verbose_pipelines
     )
-    neighbors = [1, 5, 10, 25, 50, 100, 150, 200, 250, 300, 500]
+    k = [1, 5, 10, 25, 50, 100, 150, 200, 250, 300, 500]
 
     pipeline_svc_only = Pipeline(
         [
@@ -129,29 +129,50 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
         # Adding back the class label makes the data consistent with the not-overfit case, avoiding special case
         # handling.
         data.insert(0, 'class', data_raw.loc[:, 'class'])
-        save_pca_scatter_plots(pca_data=data, prefix='reproduce')
-        for k in neighbors:
-            if k > data.shape[0]*(kfold_splits-1)/kfold_splits:
-                # Can't use more neighbors than there are training samples
+        if variance == 0.9:
+            # No need to do this several times
+            save_pca_scatter_plots(pca_data=data, prefix='reproduce')
+        results_tmp = []
+        for neighbors in k:
+            if neighbors > data.shape[0]*(kfold_splits-1)/kfold_splits:
+                # Can't use more k than there are training samples
                 continue
             params = {'variance': variance, 'pc_num': pipeline_overfit.named_steps['dim_reduction'].n_components_,
-                      'neighbors': k}
+                      'k': neighbors}
             pipeline_knn_only.set_params(
-                classification__n_neighbors=k
+                classification__n_neighbors=neighbors
             )
             eval_indicators = cross_validation(data=data, pipeline=pipeline_knn_only, kfold_splits=kfold_splits)
-            results["knn"].append(params | eval_indicators)
-        save_indicators_plot(results=results["knn"], method="knn", prefix="reproduce")
+            new_row = pd.Series(params | eval_indicators)
+            # As recommended in official pandas docs https://pandas.pydata.org/docs/reference/api/pandas.concat.html
+            # "It is not recommended to build DataFrames by adding single rows in a for loop.
+            # Build a list of rows and make a DataFrame in a single concat."
+            results_tmp.append(new_row)
+        concat_me = [results["knn"]]
+        concat_me.extend([new_row.to_frame().T for new_row in results_tmp])
+        results["knn"] = pd.concat(concat_me, ignore_index=True)
+        save_indicators_plot(results=results["knn"].loc[results["knn"]['variance'] == variance],
+                             method="knn",
+                             param_column='k',
+                             prefix="reproduce")
+        results_tmp = []
         for r in kernel_scale:
             params = {'variance': variance, 'pc_num': pipeline_overfit.named_steps['dim_reduction'].n_components_,
-                      'kernel_scale': r}
+                      'ρ': r}
             pipeline_svc_only.set_params(
                 classification__gamma=1/(r**2)
             )
             eval_indicators = cross_validation(data=data, pipeline=pipeline_svc_only, kfold_splits=kfold_splits)
-            results["svm"].append(params | eval_indicators)
-        save_indicators_plot(results=results["svm"], method="svm", prefix="reproduce")
-    return pd.DataFrame.from_records(results)
+            new_row = pd.Series(params | eval_indicators)
+            results_tmp.append(new_row)
+        concat_me = [results["svm"]]
+        concat_me.extend([new_row.to_frame().T for new_row in results_tmp])
+        results["svm"] = pd.concat(concat_me, ignore_index=True)
+        save_indicators_plot(results=results["svm"].loc[results["svm"]['variance'] == variance],
+                             method="svm",
+                             param_column='ρ',
+                             prefix="reproduce")
+    return results
 
 
 def save_pca_scatter_plots(pca_data, prefix=''):
@@ -174,7 +195,7 @@ def save_pca_scatter_plot(pca_data, component_pair, prefix=''):
     :return:
     """
     #
-    fig, ax = plt.subplots(figsize=(3.1, 2.4),
+    fig, ax = plt.subplots(figsize=(6, 4),
                            layout='constrained',
                            frameon=False,  # No background color
                            )
@@ -197,21 +218,38 @@ def save_pca_scatter_plot(pca_data, component_pair, prefix=''):
     fig.savefig(save_path,
                 format='png',
                 transparent=False,
-                dpi=100,
+                dpi=200,
                 bbox_inches='tight')
 
 
-def save_indicators_plot(results, method, prefix=''):
+def save_indicators_plot(results, method, param_column, prefix=''):
     """
     Figures 10 and 11 in the Sensors paper
     """
-    fig, ax = plt.subplots(figsize=(4, 2.6),
+    variance = results.iloc[0].at['variance']  # We assume the dataset was pre-selected
+    fig, ax = plt.subplots(figsize=(6, 4),
                            layout='constrained',
                            frameon=False,  # No background color
                            )
-    names = ["acc", "ppv", "trp", "f1", "tnr"]
-    values = []
-    ax.plot(names, values) # TODO: work this out after formatting results as DataFrame for easier slicing
+
+    variants = results[param_column].unique()
+    names = ["acc", "ppv", "tpr", "f1", "tnr"]
+    for variant in variants:
+        # ax.plot(names, results.loc[results[param_column] == variant, names], label=f"{param_column}={int(variant)}")
+        # ax.plot(data=results.loc[results[param_column] == variant, names], label=f"{param_column}={int(variant)}")
+        # Tansform dataframe so that pyplot is happy with its shape
+        ax.plot(names, results.loc[results[param_column] == variant, names].iloc[0], label=f"{param_column}={int(variant)}")
+
+    # TODO: add legend
+    save_path = (Path(config.get('out', 'path'))
+                 / f"{prefix}-indicators-plot-{method}-var{variance}.png")
+    ax.grid(True)
+    ax.legend()
+    fig.savefig(save_path,
+                format='png',
+                transparent=False,
+                dpi=200,
+                bbox_inches='tight')
 
 
 def cross_validation(data, pipeline, kfold_splits):
@@ -274,7 +312,11 @@ def main():
     )
 
     eval_indicators = reproduce_paper(data_raw, memory, config.getboolean('debug', 'verbose_pipelines', fallback=False))
-    print(eval_indicators)
+    for method in eval_indicators:
+        print('=======================================================')
+        print(method)
+        print(eval_indicators[method].to_string())
+        print('=======================================================')
     pass
 
 
