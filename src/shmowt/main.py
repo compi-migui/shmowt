@@ -19,6 +19,11 @@ from shmowt.config import get_config
 from shmowt.data import load_raw_data, _load_tiny
 
 config = get_config(os.getenv('SHMOWT_CONFIG'))
+cache_path = config.get('cache', 'path', fallback=None)
+if cache_path is None:
+    cache_path = Path(tempfile.gettempdir()) / 'shmowt-cache'
+    cache_path.mkdir(exist_ok=True)
+memory = Memory(cache_path, verbose=config.get('debug', 'verbosity_memory', fallback=0))
 
 
 def accuracy(tn, fp, fn, tp):
@@ -75,6 +80,7 @@ def noop():
     return FunctionTransformer(noop_core)
 
 
+@memory.cache
 def reproduce_paper(data_raw, memory, verbose_pipelines=False):
     """
     This procedure applies column scaling and dimensionality reduction to the entire dataset, and only applies
@@ -279,12 +285,6 @@ def cross_validation(data, pipeline, kfold_splits):
 
 
 def main():
-
-    cache_path = config.get('cache', 'path', fallback=None)
-    if cache_path is None:
-        cache_path = Path(tempfile.gettempdir()) / 'shmowt-cache'
-        cache_path.mkdir(exist_ok=True)
-    memory = Memory(cache_path, verbose=config.get('debug', 'verbosity_memory', fallback=0))
 
     tiny_data = config.getboolean('debug', 'tiny_data', fallback=False)
     data_path = config.get('data', 'path')
