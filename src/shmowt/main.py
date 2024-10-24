@@ -258,6 +258,27 @@ def save_indicators_plot(results, method, param_column, prefix=''):
                 bbox_inches='tight')
 
 
+def save_classifier_tables(results, prefix=''):
+    """
+    :param results: dict of DataFrames. keys are classifier names
+    :param prefix: string prepended to the saved figure filename
+    :return:
+    """
+    save_dir = Path(config.get('out', 'path'))
+
+    for classifier in results:
+        # 00% for explained variance, 0.0000% for all other floats (performance indicators)
+        floatfmt = ['.0%', 'g', 'g']
+        floatfmt.extend(['.2%'] * results[classifier].shape[1])
+        save_path = save_dir / Path(f"{prefix}-results-table-{classifier}.md")
+        results[classifier].to_markdown(buf=save_path,
+                                        mode='wt',
+                                        index=False,
+                                        tablefmt='grid',
+                                        floatfmt=floatfmt)
+    pass
+
+
 def cross_validation(data, pipeline, kfold_splits):
     eval_indicators = dict()
     split_metrics = []
@@ -312,11 +333,12 @@ def main():
     )
 
     eval_indicators = reproduce_paper(data_raw, memory, config.getboolean('debug', 'verbose_pipelines', fallback=False))
-    for method in eval_indicators:
-        print('=======================================================')
-        print(method)
-        print(eval_indicators[method].to_string())
-        print('=======================================================')
+    save_classifier_tables(eval_indicators, prefix='reproduce')
+    # for method in eval_indicators:
+    #     print('=======================================================')
+    #     print(method)
+    #     print(eval_indicators[method].to_string())
+    #     print('=======================================================')
     pass
 
 
