@@ -34,10 +34,7 @@ def accuracy(tn, fp, fn, tp):
 def precision(tn, fp, fn, tp):
     # Reasonable to set precision to 0 when we classified everything as a negative. Probably.
     # TODO: talk about this in the doc
-    if tp+fp != 0:
-        return tp/(tp+fp)
-    else:
-        return 0
+    return tp/(tp+fp)
 
 
 def sensitivity(tn, fp, fn, tp):
