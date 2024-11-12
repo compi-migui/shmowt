@@ -5,9 +5,10 @@ import tempfile
 
 from joblib import Memory
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix, matthews_corrcoef
 from sklearn.model_selection import KFold
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
@@ -31,7 +32,12 @@ def accuracy(tn, fp, fn, tp):
 
 
 def precision(tn, fp, fn, tp):
-    return tp/(tp+fp)
+    # Reasonable to set precision to 0 when we classified everything as a negative. Probably.
+    # TODO: talk about this in the doc
+    if tp+fp != 0:
+        return tp/(tp+fp)
+    else:
+        return 0
 
 
 def sensitivity(tn, fp, fn, tp):
@@ -47,24 +53,46 @@ def specificity(tn, fp, fn, tp):
     return tn/(tn+fp)
 
 
+def upm(tn, fp, fn, tp):
+    # Unified Performance Measure
+    # https://doi.org/10.1007/978-3-030-62365-4_10
+    return 4*tp*tn/(4*tp*tn + (tp+tn)*(fp+fn))
+
+
+def gps_upm(upm_list):
+    # General Performance Score
+    # https://doi.org/10.1007/s10489-021-03041-7
+    classes = len(upm_list)
+    nominator = classes*np.prod(upm_list)
+    denominator = 0
+    for k_prime in range(classes):
+        where = [True]*classes
+        where[k_prime] = False  # Exclude k=k_prime case from product
+        denominator = denominator + np.prod(upm_list, where=where)
+    return nominator/denominator
+
+
 def metrics_from_confusion_matrix(conf_matrix):
-    metrics = {"acc": 0, "ppv": 0, "tpr": 0, "f1": 0, "tnr": 0}
+    metrics = {'acc': [], 'ppv': [], 'tpr': [], 'f1': [], 'tnr': [], 'upm': []}
     for cls in range(len(conf_matrix)):
-        total = sum(sum(conf_matrix))
+        total = conf_matrix.sum()  # numpy.ndarray.sum
         predicted_positives = sum(conf_matrix[:, cls])
         predicted_negatives = total - predicted_positives
         tp = conf_matrix[cls][cls]
         fp = predicted_positives - tp
         fn = sum(conf_matrix[cls]) - tp
         tn = predicted_negatives - fn
-        metrics["acc"] += accuracy(tn, fp, fn, tp)
-        metrics["ppv"] += precision(tn, fp, fn, tp)
-        metrics["tpr"] += sensitivity(tn, fp, fn, tp)
-        metrics["tnr"] += specificity(tn, fp, fn, tp)
+        metrics['acc'].append(accuracy(tn, fp, fn, tp))
+        metrics['ppv'].append(precision(tn, fp, fn, tp))
+        metrics['tpr'].append(sensitivity(tn, fp, fn, tp))
+        metrics['tnr'].append(specificity(tn, fp, fn, tp))
+        metrics['upm'].append(upm(tn, fp, fn, tp))
     for metric in metrics:
-        metrics[metric] = metrics[metric] / len(conf_matrix)
-    metrics["f1"] = f1_score(metrics["ppv"], metrics["tpr"])
-
+        if metric == 'upm':
+            continue
+        metrics[metric] = np.mean(metrics[metric])
+    metrics['f1'] = f1_score(metrics['ppv'], metrics['tpr'])
+    metrics['gps_upm'] = gps_upm(metrics['upm'])
     return metrics
 
 
@@ -80,7 +108,6 @@ def noop():
     return FunctionTransformer(noop_core)
 
 
-@memory.cache
 def reproduce_paper(data_raw, memory, verbose_pipelines=False):
     """
     This procedure applies column scaling and dimensionality reduction to the entire dataset, and only applies
@@ -148,7 +175,8 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
             pipeline_knn_only.set_params(
                 classification__n_neighbors=neighbors
             )
-            eval_indicators = cross_validation(data=data, pipeline=pipeline_knn_only, kfold_splits=kfold_splits)
+            raw_results = cross_validation(data=data, pipeline=pipeline_knn_only, kfold_splits=kfold_splits)
+            eval_indicators = compute_performance_metrics(raw_results)
             new_row = pd.Series(params | eval_indicators)
             # As recommended in official pandas docs https://pandas.pydata.org/docs/reference/api/pandas.concat.html
             # "It is not recommended to build DataFrames by adding single rows in a for loop.
@@ -168,7 +196,8 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
             pipeline_svc_only.set_params(
                 classification__gamma=1/(r**2)
             )
-            eval_indicators = cross_validation(data=data, pipeline=pipeline_svc_only, kfold_splits=kfold_splits)
+            raw_results = cross_validation(data=data, pipeline=pipeline_svc_only, kfold_splits=kfold_splits)
+            eval_indicators = compute_performance_metrics(raw_results)
             new_row = pd.Series(params | eval_indicators)
             results_tmp.append(new_row)
         concat_me = [results["svm"]]
@@ -239,7 +268,7 @@ def save_indicators_plot(results, method, param_column, prefix=''):
                            )
 
     variants = results[param_column].unique()
-    names = ["acc", "ppv", "tpr", "f1", "tnr"]
+    names = ["acc", "ppv", "tpr", "f1", "tnr", "mcc", "gps_upm"]
     for variant in variants:
         # ax.plot(names, results.loc[results[param_column] == variant, names], label=f"{param_column}={int(variant)}")
         # ax.plot(data=results.loc[results[param_column] == variant, names], label=f"{param_column}={int(variant)}")
@@ -271,17 +300,24 @@ def save_classifier_tables(results, prefix=''):
         floatfmt = ['.0%', 'g', 'g']
         floatfmt.extend(['.2%'] * results[classifier].shape[1])
         save_path = save_dir / Path(f"{prefix}-results-table-{classifier}.md")
-        results[classifier].to_markdown(buf=save_path,
-                                        mode='wt',
-                                        index=False,
-                                        tablefmt='grid',
-                                        floatfmt=floatfmt)
-    pass
+        # UPM is an array which gets cumbersome. Exclude it since gps_upm kinda includes that info
+        results[classifier].loc[:, results[classifier].columns != 'upm'].to_markdown(buf=save_path,
+                                                                                     mode='wt',
+                                                                                     index=False,
+                                                                                     tablefmt='grid',
+                                                                                     floatfmt=floatfmt)
 
 
+@memory.cache
 def cross_validation(data, pipeline, kfold_splits):
-    eval_indicators = dict()
-    split_metrics = []
+    """
+    Runs pipeline fit and prediction with K-Fold splits.
+    :param data: Input data.
+    :param pipeline: The pipeline to fit and predict with.
+    :param kfold_splits: How many different train/test splits to do.
+    :return: List of true and predicted categories for each kfold split.
+    """
+    raw_results = []
     # Unlike the paper, this pipeline uses holdouts and cross-validation for the entire process, including scaling
     # and dimensionality reduction. Putting it aside for now for the sake of 100% reproduction of the paper's
     # results.
@@ -295,14 +331,32 @@ def cross_validation(data, pipeline, kfold_splits):
         predicted = pipeline.predict(data.loc[test, data.columns.drop("class")])
         # predicted = pipeline.predict(data_pca[test])
         true = data.loc[test, 'class']
+        raw_results.append({'true': true, 'predicted': predicted})
+    return raw_results
 
-        conf_matrix = confusion_matrix(true, predicted)
-        split_metrics.append(metrics_from_confusion_matrix(conf_matrix))
 
-    for metric in split_metrics[0]:
-        # Evaluator indicators are averaged from the indicators of all splits
-        eval_indicators[metric] = sum([x[metric] for x in split_metrics]) / len(split_metrics)
-    return eval_indicators
+def compute_performance_metrics(raw_results):
+    if isinstance(raw_results, list):
+        metrics = {}
+        split_metrics = []
+        for split in raw_results:
+            split_metrics.append(compute_performance_metrics(split))
+        for metric in split_metrics[0]:
+            # Evaluator indicators are averaged from the indicators of all splits
+            # TODO: is averaging these actually the right call? Might it make sense to take the minimum value,
+            #  or give both mean and stdev?
+            if isinstance(split_metrics[0][metric], list):
+                # If the original metric is an array, we must average each element in a slice across splits
+                metrics[metric] = []
+                for i, _ in enumerate(split_metrics[0][metric]):
+                    metrics[metric].append(np.mean([split_metrics[x][metric][i] for x in range(len(split_metrics))]))
+            else:
+                metrics[metric] = sum([x[metric] for x in split_metrics]) / len(split_metrics)
+        return metrics
+    conf_matrix = confusion_matrix(raw_results['true'], raw_results['predicted'])
+    metrics = metrics_from_confusion_matrix(conf_matrix)
+    metrics['mcc'] = matthews_corrcoef(raw_results['true'], raw_results['predicted'])
+    return metrics
 
 
 def main():
