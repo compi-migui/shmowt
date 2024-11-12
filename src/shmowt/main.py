@@ -116,12 +116,9 @@ def reproduce_paper(data_path, memory, verbose_pipelines=False):
     """
     # Table 5 in the paper
     results = {"knn": [], "svm": []}
-    raw_results = {"knn": [], "svm": []}
     kfold_splits = 5
     results["knn"] = pd.DataFrame(columns=['variance', 'pc_num', 'k', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
     results["svm"] = pd.DataFrame(columns=['variance', 'pc_num', 'ρ', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
-    raw_results["knn"] = pd.DataFrame(columns=['variance', 'k'])
-    raw_results["svm"] = pd.DataFrame(columns=['variance', 'ρ'])
 
     explained_variances = [0.85, 0.90, 0.95]
     k = [1, 5, 10, 25, 50, 100, 150, 200, 250, 300, 500]
@@ -137,16 +134,14 @@ def reproduce_paper(data_path, memory, verbose_pipelines=False):
             save_pca_plots = (variance == 0.9 and k == 1)
             params = {'variance': variance, 'kfold_splits': kfold_splits, 'k': neighbors}
 
-            raw_results = run_overfit_pipeline(pipeline_name='knn', data_path=data_path, params=params)
+            raw_results, params = run_overfit_pipeline(pipeline_name='knn', data_path=data_path, params=params)
             eval_indicators, conf_matrices = compute_performance_metrics(raw_results)
 
-            new_row = pd.Series(params | eval_indicators)
-            new_row_raw = pd.Series(params | {'conf_matrices': conf_matrices})
+            new_row = pd.Series(params | eval_indicators | {'conf_matrices': conf_matrices})
             # As recommended in official pandas docs https://pandas.pydata.org/docs/reference/api/pandas.concat.html
             # "It is not recommended to build DataFrames by adding single rows in a for loop.
             # Build a list of rows and make a DataFrame in a single concat."
             results_tmp.append(new_row)
-            raw_results_tmp.append(new_row_raw)
 
         concat_me = [results["knn"]]
         concat_me.extend([new_row.to_frame().T for new_row in results_tmp])
@@ -155,21 +150,14 @@ def reproduce_paper(data_path, memory, verbose_pipelines=False):
                              method="knn",
                              param_column='k',
                              prefix="reproduce")
-        # TODO: could save confusion matrices right around here
-        concat_me_raw = [raw_results["knn"]]
-        concat_me_raw.extend([new_row_raw.to_frame().T for new_row_raw in raw_results_tmp])
-        raw_results["knn"] = pd.concat(concat_me_raw, ignore_index=True)
 
         results_tmp = []
-        raw_results_tmp = []
         for r in kernel_scale:
             params = {'variance': variance, 'kfold_splits': kfold_splits, 'ρ': r}
-            raw_results = run_overfit_pipeline(pipeline_name='svm', data_path=data_path, params=params)
+            raw_results, params = run_overfit_pipeline(pipeline_name='svm', data_path=data_path, params=params)
             eval_indicators, conf_matrices = compute_performance_metrics(raw_results)
-            new_row = pd.Series(params | eval_indicators)
-            new_row_raw = pd.Series(params | {'conf_matrices': conf_matrices})
+            new_row = pd.Series(params | eval_indicators | {'conf_matrices': conf_matrices})
             results_tmp.append(new_row)
-            raw_results_tmp.append(new_row_raw)
         concat_me = [results["svm"]]
         concat_me.extend([new_row.to_frame().T for new_row in results_tmp])
         results["svm"] = pd.concat(concat_me, ignore_index=True)
@@ -177,11 +165,8 @@ def reproduce_paper(data_path, memory, verbose_pipelines=False):
                              method="svm",
                              param_column='ρ',
                              prefix="reproduce")
-        concat_me_raw = [raw_results["svm"]]
-        concat_me_raw.extend([new_row_raw.to_frame().T for new_row_raw in raw_results_tmp])
-        raw_results["svm"] = pd.concat(concat_me_raw, ignore_index=True)
 
-    return results, raw_results
+    return results
 
 
 @memory.cache
@@ -211,7 +196,7 @@ def run_overfit_pipeline(pipeline_name, data_path, params, save_pca_plot=False, 
         raise ValueError(f"Unkown pipeline name: {pipeline_name}")
 
     raw_results = cross_validation(data=data, pipeline=pipeline, kfold_splits=params['kfold_splits'])
-    return raw_results
+    return raw_results, params
 
 
 def overfit_pipeline_knn(data, k, verbose=False):
@@ -327,11 +312,12 @@ def save_classifier_tables(results, prefix=''):
         floatfmt.extend(['.2%'] * results[classifier].shape[1])
         save_path = save_dir / Path(f"{prefix}-results-table-{classifier}.md")
         # UPM is an array which gets cumbersome. Exclude it since gps_upm kinda includes that info
-        results[classifier].loc[:, results[classifier].columns != 'upm'].to_markdown(buf=save_path,
-                                                                                     mode='wt',
-                                                                                     index=False,
-                                                                                     tablefmt='grid',
-                                                                                     floatfmt=floatfmt)
+        results[classifier].drop(columns=['upm', 'conf_matrices']).to_markdown(
+                                                                               buf=save_path,
+                                                                               mode='wt',
+                                                                               index=False,
+                                                                               tablefmt='grid',
+                                                                               floatfmt=floatfmt)
 
 
 def save_raw_results(results, prefix=''):
@@ -340,6 +326,7 @@ def save_raw_results(results, prefix=''):
     :param prefix: string prepended to the saved figure filename
     :return:
     """
+    # TODO: make this save confusion matrices in a sensible manner instead
     save_dir = Path(config.get('out', 'path'))
 
     for classifier in results:
@@ -404,11 +391,11 @@ def main():
     tiny_data = config.getboolean('debug', 'tiny_data', fallback=False)
     data_path = config.get('data', 'path')
 
-    eval_indicators, raw_results = reproduce_paper(data_path,
-                                                   memory,
-                                                   config.getboolean('debug', 'verbose_pipelines', fallback=False))
+    eval_indicators = reproduce_paper(data_path,
+                                      memory,
+                                      config.getboolean('debug', 'verbose_pipelines', fallback=False))
     save_classifier_tables(eval_indicators, prefix='reproduce')
-    save_raw_results(raw_results, prefix='reproduce')
+    # save_raw_results(eval_indicators, prefix='reproduce')
     # for method in eval_indicators:
     #     print('=======================================================')
     #     print(method)
