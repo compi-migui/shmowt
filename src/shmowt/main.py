@@ -108,80 +108,49 @@ def noop():
     return FunctionTransformer(noop_core)
 
 
-def reproduce_paper(data_raw, memory, verbose_pipelines=False):
+def reproduce_paper(data_path, memory, verbose_pipelines=False):
     """
     This procedure applies column scaling and dimensionality reduction to the entire dataset, and only applies
     cross-validation to the classifier. Same as the paper does.
-    :param data_raw:
+    :param data_path:
     :param memory:
     :param verbose_pipelines:
     :return:
     """
     # Table 5 in the paper
     results = {"knn": [], "svm": []}
+    raw_results = {"knn": [], "svm": []}
     kfold_splits = 5
     results["knn"] = pd.DataFrame(columns=['variance', 'pc_num', 'k', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
     results["svm"] = pd.DataFrame(columns=['variance', 'pc_num', 'ρ', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
-    pipeline_overfit = Pipeline(
-        [
-            ('column_scaling', StandardScaler()),
-            ('dim_reduction', PCA(svd_solver='full')),
-            ('classification', noop())
-        ],
-        memory=memory,
-        verbose=verbose_pipelines
-    )
-    pipeline_overfit.set_output(transform='pandas')
+    raw_results["knn"] = pd.DataFrame(columns=['variance', 'k'])
+    raw_results["svm"] = pd.DataFrame(columns=['variance', 'ρ'])
 
     explained_variances = [0.85, 0.90, 0.95]
-
-    pipeline_knn_only = Pipeline(
-        [
-            ('classification', KNeighborsClassifier())
-        ],
-        memory=memory,
-        verbose=verbose_pipelines
-    )
     k = [1, 5, 10, 25, 50, 100, 150, 200, 250, 300, 500]
-
-    pipeline_svc_only = Pipeline(
-        [
-            ('classification', SVC(C=1.0, kernel='poly', degree=2, coef0=0))
-        ],
-        memory=memory,
-        verbose=verbose_pipelines
-    )
     kernel_scale = [5, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300]
 
     for variance in explained_variances:
-        pipeline_overfit.set_params(
-            dim_reduction__n_components=variance
-        )
-
-        data = pipeline_overfit.fit_transform(data_raw.loc[:, data_raw.columns.drop("class")])
         # Adding back the class label makes the data consistent with the not-overfit case, avoiding special case
         # handling.
-        data.insert(0, 'class', data_raw.loc[:, 'class'])
-        if variance == 0.9:
-            # No need to do this several times
-            save_pca_scatter_plots(pca_data=data, prefix='reproduce')
         results_tmp = []
+        raw_results_tmp = []
         for neighbors in k:
-            if neighbors > data.shape[0]*(kfold_splits-1)/kfold_splits:
-                # Can't use more k than there are training samples
-                continue
-            params = {'variance': variance, 'pc_num': pipeline_overfit.named_steps['dim_reduction'].n_components_,
-                      'k': neighbors}
-            pipeline_knn_only.set_params(
-                classification__n_neighbors=neighbors
-            )
-            raw_results = cross_validation(data=data, pipeline=pipeline_knn_only, kfold_splits=kfold_splits)
-            eval_indicators = compute_performance_metrics(raw_results)
+            # Only save PCA plots once, they're identical across runs
+            save_pca_plots = (variance == 0.9 and k == 1)
+            params = {'variance': variance, 'kfold_splits': kfold_splits, 'k': neighbors}
+
+            raw_results = run_overfit_pipeline(pipeline_name='knn', data_path=data_path, params=params)
+            eval_indicators, conf_matrices = compute_performance_metrics(raw_results)
+
             new_row = pd.Series(params | eval_indicators)
+            new_row_raw = pd.Series(params | {'conf_matrices': conf_matrices})
             # As recommended in official pandas docs https://pandas.pydata.org/docs/reference/api/pandas.concat.html
             # "It is not recommended to build DataFrames by adding single rows in a for loop.
             # Build a list of rows and make a DataFrame in a single concat."
             results_tmp.append(new_row)
+            raw_results_tmp.append(new_row_raw)
+
         concat_me = [results["knn"]]
         concat_me.extend([new_row.to_frame().T for new_row in results_tmp])
         results["knn"] = pd.concat(concat_me, ignore_index=True)
@@ -189,17 +158,21 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
                              method="knn",
                              param_column='k',
                              prefix="reproduce")
+        # TODO: could save confusion matrices right around here
+        concat_me_raw = [raw_results["knn"]]
+        concat_me_raw.extend([new_row_raw.to_frame().T for new_row_raw in raw_results_tmp])
+        raw_results["knn"] = pd.concat(concat_me_raw, ignore_index=True)
+
         results_tmp = []
+        raw_results_tmp = []
         for r in kernel_scale:
-            params = {'variance': variance, 'pc_num': pipeline_overfit.named_steps['dim_reduction'].n_components_,
-                      'ρ': r}
-            pipeline_svc_only.set_params(
-                classification__gamma=1/(r**2)
-            )
-            raw_results = cross_validation(data=data, pipeline=pipeline_svc_only, kfold_splits=kfold_splits)
-            eval_indicators = compute_performance_metrics(raw_results)
+            params = {'variance': variance, 'kfold_splits': kfold_splits, 'ρ': r}
+            raw_results = run_overfit_pipeline(pipeline_name='svm', data_path=data_path, params=params)
+            eval_indicators, conf_matrices = compute_performance_metrics(raw_results)
             new_row = pd.Series(params | eval_indicators)
+            new_row_raw = pd.Series(params | {'conf_matrices': conf_matrices})
             results_tmp.append(new_row)
+            raw_results_tmp.append(new_row_raw)
         concat_me = [results["svm"]]
         concat_me.extend([new_row.to_frame().T for new_row in results_tmp])
         results["svm"] = pd.concat(concat_me, ignore_index=True)
@@ -207,7 +180,63 @@ def reproduce_paper(data_raw, memory, verbose_pipelines=False):
                              method="svm",
                              param_column='ρ',
                              prefix="reproduce")
-    return results
+        concat_me_raw = [raw_results["svm"]]
+        concat_me_raw.extend([new_row_raw.to_frame().T for new_row_raw in raw_results_tmp])
+        raw_results["svm"] = pd.concat(concat_me_raw, ignore_index=True)
+
+    return results, raw_results
+
+
+@memory.cache
+def run_overfit_pipeline(pipeline_name, data_path, params, save_pca_plot=False, verbose=False):
+    pipeline_overfit = Pipeline(
+        [
+            ('column_scaling', StandardScaler()),
+            ('dim_reduction', PCA(svd_solver='full', n_components=params['variance'])),
+            ('classification', noop())
+        ],
+        memory=memory,
+        verbose=verbose
+    )
+    pipeline_overfit.set_output(transform='pandas')
+    data_raw = load_raw_data(data_path)
+    data = pipeline_overfit.fit_transform(data_raw.loc[:, data_raw.columns.drop("class")])
+    data.insert(0, 'class', data_raw.loc[:, 'class'])
+    params['pc_num'] = pipeline_overfit.named_steps['dim_reduction'].n_components_
+    if save_pca_plot:
+        save_pca_scatter_plots(pca_data=data, prefix='reproduce')
+
+    if pipeline_name == 'knn':
+        pipeline = overfit_pipeline_knn(data=data, k=params['k'], verbose=verbose)
+    elif pipeline_name == 'svm':
+        pipeline = overfit_pipeline_svm(data=data, r=params['ρ'], verbose=verbose)
+    else:
+        raise ValueError(f"Unkown pipeline name: {pipeline_name}")
+
+    raw_results = cross_validation(data=data, pipeline=pipeline, kfold_splits=params['kfold_splits'])
+    return raw_results
+
+
+def overfit_pipeline_knn(data, k, verbose=False):
+    pipeline = Pipeline(
+        [
+            ('classification', KNeighborsClassifier(n_neighbors=k))
+        ],
+        memory=memory,
+        verbose=verbose
+    )
+    return pipeline
+
+
+def overfit_pipeline_svm(data, r, verbose=False):
+    pipeline = Pipeline(
+        [
+            ('classification', SVC(C=1.0, kernel='poly', degree=2, coef0=0, gamma=1/(r**2)))
+        ],
+        memory=memory,
+        verbose=verbose
+    )
+    return pipeline
 
 
 def save_pca_scatter_plots(pca_data, prefix=''):
@@ -308,6 +337,20 @@ def save_classifier_tables(results, prefix=''):
                                                                                      floatfmt=floatfmt)
 
 
+def save_raw_results(results, prefix=''):
+    """
+    :param results: dict of DataFrames. keys are classifier names
+    :param prefix: string prepended to the saved figure filename
+    :return:
+    """
+    save_dir = Path(config.get('out', 'path'))
+
+    for classifier in results:
+        save_path = save_dir / Path(f"{prefix}-raw-results-{classifier}.txt")
+        with open(save_path, 'wt') as f:
+            print(results[classifier].to_string(), file=f)
+
+
 @memory.cache
 def cross_validation(data, pipeline, kfold_splits):
     """
@@ -341,60 +384,39 @@ def compute_performance_metrics(raw_results):
         split_metrics = []
         for split in raw_results:
             split_metrics.append(compute_performance_metrics(split))
-        for metric in split_metrics[0]:
+        for metric in split_metrics[0][0]:
             # Evaluator indicators are averaged from the indicators of all splits
             # TODO: is averaging these actually the right call? Might it make sense to take the minimum value,
             #  or give both mean and stdev?
-            if isinstance(split_metrics[0][metric], list):
+            if isinstance(split_metrics[0][0][metric], list):
                 # If the original metric is an array, we must average each element in a slice across splits
                 metrics[metric] = []
-                for i, _ in enumerate(split_metrics[0][metric]):
-                    metrics[metric].append(np.mean([split_metrics[x][metric][i] for x in range(len(split_metrics))]))
+                for i, _ in enumerate(split_metrics[0][0][metric]):
+                    metrics[metric].append(np.mean([x[0][metric][i] for x in split_metrics]))
             else:
-                metrics[metric] = sum([x[metric] for x in split_metrics]) / len(split_metrics)
-        return metrics
+                metrics[metric] = sum([x[0][metric] for x in split_metrics]) / len(split_metrics)
+        conf_matrices = [x[1] for x in split_metrics]
+        return metrics, conf_matrices
     conf_matrix = confusion_matrix(raw_results['true'], raw_results['predicted'])
     metrics = metrics_from_confusion_matrix(conf_matrix)
     metrics['mcc'] = matthews_corrcoef(raw_results['true'], raw_results['predicted'])
-    return metrics
+    return metrics, conf_matrix
 
 
 def main():
-
     tiny_data = config.getboolean('debug', 'tiny_data', fallback=False)
     data_path = config.get('data', 'path')
-    if tiny_data:
-        load_tiny_cache = memory.cache(_load_tiny, verbose=config.get('debug', 'verbosity_memory', fallback=0))
-        data_raw = load_tiny_cache(data_path)
-    else:
-        data_raw = load_raw_data(data_path)
 
-    # PCA(n_components=0.85, svd_solver='full')
-    pipeline_knn = Pipeline(
-        [
-            ('column_scaling', StandardScaler()),
-            ('dim_reduction', PCA(svd_solver='full')),
-            ('classification', KNeighborsClassifier()), # TODO: could do passthrough here
-        ],
-        memory=memory,
-        verbose=config.getboolean('debug', 'verbose_pipelines', fallback=False)
-    )
-
-
-    pipeline_knn.set_params(
-        dim_reduction__n_components=0.85,
-        classification__n_neighbors=5
-    )
-
-    eval_indicators = reproduce_paper(data_raw, memory, config.getboolean('debug', 'verbose_pipelines', fallback=False))
+    eval_indicators, raw_results = reproduce_paper(data_path,
+                                                   memory,
+                                                   config.getboolean('debug', 'verbose_pipelines', fallback=False))
     save_classifier_tables(eval_indicators, prefix='reproduce')
+    save_raw_results(raw_results, prefix='reproduce')
     # for method in eval_indicators:
     #     print('=======================================================')
     #     print(method)
     #     print(eval_indicators[method].to_string())
     #     print('=======================================================')
-    pass
-
 
 
 if __name__ == '__main__':
