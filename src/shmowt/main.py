@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
-from sklearn.metrics import confusion_matrix, matthews_corrcoef
+from sklearn.metrics import confusion_matrix, matthews_corrcoef, ConfusionMatrixDisplay
 from sklearn.model_selection import KFold
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
@@ -298,6 +298,48 @@ def save_indicators_plot(results, method, param_column, prefix=''):
                 bbox_inches='tight')
 
 
+def save_confusion_matrices(results, prefix=''):
+    """
+    Figures 10 and 11 in the Sensors paper
+    """
+    # Let's plot only the confusion matrix for the first K-fold split and TODO: worry about the rest later, maybe
+    i = 0
+    save_dir = Path(config.get('out', 'path'))
+    for classifier in results:
+        if classifier == 'knn':
+            name = 'k-NN'
+            param = 'k'
+        elif classifier == 'svm':
+            name = 'SVM'
+            param = 'ρ'
+        else:
+            raise ValueError(f"Unkown classifier name: {classifier}")
+        for variance in results[classifier]['variance'].unique():
+            for i, _ in enumerate(results[classifier].iloc[0]['conf_matrices']):
+                save_path = save_dir / Path(f"{prefix}-conf_matrices-{classifier}-var{variance}-{i}.png")
+                subset = results[classifier].loc[results[classifier]['variance'] == variance].iloc[:12]
+                fig, axs = plt.subplots(4,
+                                        3,
+                                        figsize=(8, 12),
+                                        layout='constrained',
+                                        frameon=False,  # No background color
+                                        )
+                ax_index = 0
+                for idx, row in subset.iterrows():
+                    cmd = ConfusionMatrixDisplay(row['conf_matrices'][i])
+                    cmd.plot(cmap='Blues', colorbar=False, ax=axs.flat[ax_index])
+                    axs.flat[ax_index].set_title(f"{param}={row[param]}")
+                    ax_index += 1
+                for ax in axs.flat:
+                    if not bool(ax.has_data()):
+                        fig.delaxes(ax)
+                fig.savefig(save_path,
+                            format='png',
+                            transparent=False,
+                            dpi=100,
+                            bbox_inches='tight')
+
+
 def save_classifier_tables(results, prefix=''):
     """
     :param results: dict of DataFrames. keys are classifier names
@@ -312,7 +354,7 @@ def save_classifier_tables(results, prefix=''):
         floatfmt.extend(['.2%'] * results[classifier].shape[1])
         save_path = save_dir / Path(f"{prefix}-results-table-{classifier}.md")
         # UPM is an array which gets cumbersome. Exclude it since gps_upm kinda includes that info
-        results[classifier].drop(columns=['upm', 'conf_matrices']).to_markdown(
+        results[classifier].drop(columns=['upm', 'conf_matrices', 'kfold_splits']).to_markdown(
                                                                                buf=save_path,
                                                                                mode='wt',
                                                                                index=False,
@@ -327,12 +369,29 @@ def save_raw_results(results, prefix=''):
     :return:
     """
     # TODO: make this save confusion matrices in a sensible manner instead
-    save_dir = Path(config.get('out', 'path'))
-
-    for classifier in results:
-        save_path = save_dir / Path(f"{prefix}-raw-results-{classifier}.txt")
-        with open(save_path, 'wt') as f:
-            print(results[classifier].to_string(), file=f)
+    pass
+    # save_dir = Path(config.get('out', 'path'))
+    #
+    # for classifier in results:
+    #     save_path = save_dir / Path(f"{prefix}-results-conf_matrices-{classifier}.png")
+    #     ConfusionMatrixDisplay
+    #     save_path = save_dir / Path(f"{prefix}-results-conf_matrices-{classifier}.txt")
+    #     if classifier == 'knn':
+    #         name = 'k-NN'
+    #         param = 'k'
+    #     elif classifier == 'svm':
+    #         name = 'SVM'
+    #         param = 'ρ'
+    #     else:
+    #         raise ValueError(f"Unkown classifier name: {classifier}")
+    #     with open(save_path, 'wt') as f:
+    #         for variant in results[classifier].iterrows():
+    #             footer = (f"Confusion matrices for each {variant['kfold_splits']}-fold split of the {name} classifier, "
+    #                       f"with {param}={variant[param]} and using principal components that explain "
+    #                       f"{variant['variance']:.0%} of variance. {{#tbl:{prefix}-conf_matrices-{classifier}}}")
+    #
+    #             print(results[classifier].to_string(), file=f)
+    #             print(footer, file=f)
 
 
 @memory.cache
@@ -395,6 +454,7 @@ def main():
                                       memory,
                                       config.getboolean('debug', 'verbose_pipelines', fallback=False))
     save_classifier_tables(eval_indicators, prefix='reproduce')
+    save_confusion_matrices(eval_indicators, prefix='reproduce')
     # save_raw_results(eval_indicators, prefix='reproduce')
     # for method in eval_indicators:
     #     print('=======================================================')
