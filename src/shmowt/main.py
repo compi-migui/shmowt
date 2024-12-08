@@ -221,6 +221,101 @@ def overfit_pipeline_svm(data, r, verbose=False):
     return pipeline
 
 
+def reproduce_noleak(data_path, memory, verbose_pipelines=False):
+    """
+    This procedure applies strict train/test separation across the entire pipeline.
+    :param data_path:
+    :param memory:
+    :param verbose_pipelines:
+    :return:
+    """
+    # Table 5 in the paper
+    results = {"knn": [], "svm": []}
+    kfold_splits = 5
+    results["knn"] = pd.DataFrame(columns=['variance', 'pc_num', 'k', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
+    results["svm"] = pd.DataFrame(columns=['variance', 'pc_num', 'ρ', 'acc', 'ppv', 'tpr', 'f1', 'tnr'])
+
+    explained_variances = [0.85, 0.90, 0.95]
+    k = [1, 5, 10, 25, 50, 100, 150, 200, 250, 300, 500]
+    kernel_scale = [5, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300]
+
+    for variance in explained_variances:
+        # Adding back the class label makes the data consistent with the not-overfit case, avoiding special case
+        # handling.
+        results_tmp = []
+        for neighbors in k:
+            params = {'variance': variance, 'kfold_splits': kfold_splits, 'k': neighbors}
+
+            raw_results, params = run_noleak_pipeline(pipeline_name='knn', data_path=data_path, params=params)
+            eval_indicators, conf_matrices = compute_performance_metrics(raw_results)
+
+            new_row = pd.Series(params | eval_indicators | {'conf_matrices': conf_matrices})
+            # As recommended in official pandas docs https://pandas.pydata.org/docs/reference/api/pandas.concat.html
+            # "It is not recommended to build DataFrames by adding single rows in a for loop.
+            # Build a list of rows and make a DataFrame in a single concat."
+            results_tmp.append(new_row)
+
+        concat_me = [results["knn"]]
+        concat_me.extend([new_row.to_frame().T for new_row in results_tmp])
+        results["knn"] = pd.concat(concat_me, ignore_index=True)
+        save_indicators_plot(results=results["knn"].loc[results["knn"]['variance'] == variance],
+                             method="knn",
+                             param_column='k',
+                             prefix="noleak")
+
+        results_tmp = []
+        for r in kernel_scale:
+            params = {'variance': variance, 'kfold_splits': kfold_splits, 'ρ': r}
+            raw_results, params = run_noleak_pipeline(pipeline_name='svm', data_path=data_path, params=params)
+            eval_indicators, conf_matrices = compute_performance_metrics(raw_results)
+            new_row = pd.Series(params | eval_indicators | {'conf_matrices': conf_matrices})
+            results_tmp.append(new_row)
+        concat_me = [results["svm"]]
+        concat_me.extend([new_row.to_frame().T for new_row in results_tmp])
+        results["svm"] = pd.concat(concat_me, ignore_index=True)
+        save_indicators_plot(results=results["svm"].loc[results["svm"]['variance'] == variance],
+                             method="svm",
+                             param_column='ρ',
+                             prefix="noleak")
+
+    return results
+
+
+@memory.cache
+def run_noleak_pipeline(pipeline_name, data_path, params, save_pca_plot=False, verbose=False):
+    data = load_raw_data(data_path)
+
+    if pipeline_name == 'knn':
+        pipeline = Pipeline(
+            [
+                ('column_scaling', StandardScaler()),
+                ('dim_reduction', PCA(svd_solver='full', n_components=params['variance'])),
+                ('classification', KNeighborsClassifier(n_neighbors=params['k']))
+            ],
+            memory=memory,
+            verbose=verbose
+        )
+    elif pipeline_name == 'svm':
+        pipeline = Pipeline(
+            [
+                ('column_scaling', StandardScaler()),
+                ('dim_reduction', PCA(svd_solver='full', n_components=params['variance'])),
+                ('classification', SVC(C=1.0, kernel='poly', degree=2, coef0=0, gamma=1/(params['ρ']**2)))
+            ],
+            memory=memory,
+            verbose=verbose
+        )
+    else:
+        raise ValueError(f"Unkown pipeline name: {pipeline_name}")
+
+    # pipeline.set_output(transform='pandas')
+    raw_results = cross_validation(data=data, pipeline=pipeline, kfold_splits=params['kfold_splits'])
+    # Different splits will end up with different numbers of principal components. Report the truncated average for
+    # a reasonable comparison point.
+    params['pc_num'] = int(np.mean([raw_results[i]['pc_num'] for i, _ in enumerate(raw_results)]))
+    return raw_results, params
+
+
 def save_pca_scatter_plots(pca_data, prefix=''):
     """
     Create and save scatter plots of PCA data
@@ -417,7 +512,9 @@ def cross_validation(data, pipeline, kfold_splits):
         predicted = pipeline.predict(data.loc[test, data.columns.drop("class")])
         # predicted = pipeline.predict(data_pca[test])
         true = data.loc[test, 'class']
-        raw_results.append({'true': true, 'predicted': predicted})
+        raw_results.append({'true': true,
+                            'predicted': predicted,
+                            'pc_num': pipeline.named_steps['dim_reduction'].n_components_})
     return raw_results
 
 
@@ -450,11 +547,17 @@ def main():
     tiny_data = config.getboolean('debug', 'tiny_data', fallback=False)
     data_path = config.get('data', 'path')
 
-    eval_indicators = reproduce_paper(data_path,
-                                      memory,
-                                      config.getboolean('debug', 'verbose_pipelines', fallback=False))
-    save_classifier_tables(eval_indicators, prefix='reproduce')
-    save_confusion_matrices(eval_indicators, prefix='reproduce')
+    # eval_indicators = reproduce_paper(data_path,
+    #                                   memory,
+    #                                   config.getboolean('debug', 'verbose_pipelines', fallback=False))
+    # save_classifier_tables(eval_indicators, prefix='reproduce')
+    # save_confusion_matrices(eval_indicators, prefix='reproduce')
+
+    eval_indicators_noleak = reproduce_noleak(data_path,
+                                              memory,
+                                              config.getboolean('debug', 'verbose_pipelines', fallback=False))
+    save_classifier_tables(eval_indicators_noleak, prefix='noleak')
+    save_confusion_matrices(eval_indicators_noleak, prefix='noleak')
     # save_raw_results(eval_indicators, prefix='reproduce')
     # for method in eval_indicators:
     #     print('=======================================================')
