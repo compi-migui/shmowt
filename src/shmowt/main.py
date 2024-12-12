@@ -24,7 +24,7 @@ cache_path = config.get('cache', 'path', fallback=None)
 if cache_path is None:
     cache_path = Path(tempfile.gettempdir()) / 'shmowt-cache'
     cache_path.mkdir(exist_ok=True)
-memory = Memory(cache_path, verbose=config.get('debug', 'verbosity_memory', fallback=0))
+memory = Memory(cache_path, verbose=config.get('debug', 'verbose_memory', fallback=0))
 
 
 def accuracy(tn, fp, fn, tp):
