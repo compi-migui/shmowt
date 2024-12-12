@@ -7,23 +7,10 @@ import pandas as pd
 def load_raw_data(data_path):
     with h5py.File(data_path, 'r') as data_file:
         data_all = data_file['datacompleto']
-        # data = pd.DataFrame(data_all).transpose()
-        # TODO: Get rid of this workaround once we have cleaner data
         data = _truncate_data(data_all)
     # noinspection PyTypeChecker
     data.insert(0, 'class', [class_mapper(i) for i in range(data.shape[0])])
     return data
-
-
-def _load_tiny(data_path, n=200):
-    '''
-    Meant for quick development only. Take only a tiny sample of the dataset.
-    :param data_path:
-    :param n:
-    :return:
-    '''
-    data_all = load_raw_data(data_path)
-    return data_all.sample(n=n, weights='class', random_state=0, ignore_index=True)
 
 
 def _truncate_data(data_all):

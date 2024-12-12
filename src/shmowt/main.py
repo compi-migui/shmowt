@@ -17,7 +17,7 @@ from sklearn.svm import SVC
 
 
 from shmowt.config import get_config
-from shmowt.data import load_raw_data, _load_tiny
+from shmowt.data import load_raw_data
 
 config = get_config(os.getenv('SHMOWT_CONFIG'))
 cache_path = config.get('cache', 'path', fallback=None)
@@ -32,8 +32,6 @@ def accuracy(tn, fp, fn, tp):
 
 
 def precision(tn, fp, fn, tp):
-    # Reasonable to set precision to 0 when we classified everything as a negative. Probably.
-    # TODO: talk about this in the doc
     return tp/(tp+fp)
 
 
@@ -224,10 +222,6 @@ def overfit_pipeline_svm(data, r, verbose=False):
 def reproduce_noleak(data_path, memory, verbose_pipelines=False):
     """
     This procedure applies strict train/test separation across the entire pipeline.
-    :param data_path:
-    :param memory:
-    :param verbose_pipelines:
-    :return:
     """
     # Table 5 in the paper
     results = {"knn": [], "svm": []}
@@ -350,7 +344,6 @@ def save_pca_scatter_plot(pca_data, component_pair, prefix=''):
             alpha=0.8,
             label=dataset
         )
-    # plt.legend(loc="best", shadow=False, scatterpoints=1, markerscale=3)
     ax.set_xlabel(f"Principal component {component_pair[0]+1}")  # 0 is the 1st principal component and so on
     ax.set_ylabel(f"Principal component {component_pair[1]+1}")
     ax.grid(True)
@@ -376,8 +369,6 @@ def save_indicators_plot(results, method, param_column, prefix=''):
     variants = results[param_column].unique()
     names = ["acc", "ppv", "tpr", "f1", "tnr", "mcc", "gps_upm"]
     for variant in variants:
-        # ax.plot(names, results.loc[results[param_column] == variant, names], label=f"{param_column}={int(variant)}")
-        # ax.plot(data=results.loc[results[param_column] == variant, names], label=f"{param_column}={int(variant)}")
         # Tansform dataframe so that pyplot is happy with its shape
         ax.plot(names,
                 results.loc[results[param_column] == variant, names].iloc[0],
@@ -400,8 +391,7 @@ def save_confusion_matrices(results, prefix=''):
     """
     Figures 10 and 11 in the Sensors paper
     """
-    # Let's plot only the confusion matrix for the first K-fold split and TODO: worry about the rest later, maybe
-    i = 0
+    # Let's plot only the confusion matrix for the first K-fold split
     save_dir = Path(config.get('out', 'path'))
     for classifier in results:
         if classifier == 'knn':
@@ -477,38 +467,6 @@ def save_classifier_tables(results, prefix=''):
                                                                                stralign=None)
 
 
-def save_raw_results(results, prefix=''):
-    """
-    :param results: dict of DataFrames. keys are classifier names
-    :param prefix: string prepended to the saved figure filename
-    :return:
-    """
-    # TODO: make this save confusion matrices in a sensible manner instead
-    pass
-    # save_dir = Path(config.get('out', 'path'))
-    #
-    # for classifier in results:
-    #     save_path = save_dir / Path(f"{prefix}-results-conf_matrices-{classifier}.png")
-    #     ConfusionMatrixDisplay
-    #     save_path = save_dir / Path(f"{prefix}-results-conf_matrices-{classifier}.txt")
-    #     if classifier == 'knn':
-    #         name = 'k-NN'
-    #         param = 'k'
-    #     elif classifier == 'svm':
-    #         name = 'SVM'
-    #         param = 'ρ'
-    #     else:
-    #         raise ValueError(f"Unkown classifier name: {classifier}")
-    #     with open(save_path, 'wt') as f:
-    #         for variant in results[classifier].iterrows():
-    #             footer = (f"Confusion matrices for each {variant['kfold_splits']}-fold split of the {name} classifier, "
-    #                       f"with {param}={variant[param]} and using principal components that explain "
-    #                       f"{variant['variance']:.0%} of variance. {{#tbl:{prefix}-conf_matrices-{classifier}}}")
-    #
-    #             print(results[classifier].to_string(), file=f)
-    #             print(footer, file=f)
-
-
 @memory.cache
 def cross_validation(data, pipeline, kfold_splits):
     """
@@ -546,8 +504,6 @@ def compute_performance_metrics(raw_results):
             split_metrics.append(compute_performance_metrics(split))
         for metric in split_metrics[0][0]:
             # Evaluator indicators are averaged from the indicators of all splits
-            # TODO: is averaging these actually the right call? Might it make sense to take the minimum value,
-            #  or give both mean and stdev?
             if isinstance(split_metrics[0][0][metric], list):
                 # If the original metric is an array, we must average each element in a slice across splits
                 metrics[metric] = []
@@ -564,7 +520,6 @@ def compute_performance_metrics(raw_results):
 
 
 def main():
-    tiny_data = config.getboolean('debug', 'tiny_data', fallback=False)
     data_path = config.get('data', 'path')
 
     eval_indicators = reproduce_paper(data_path,
