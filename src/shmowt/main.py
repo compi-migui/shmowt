@@ -379,7 +379,10 @@ def save_indicators_plot(results, method, param_column, prefix=''):
         # ax.plot(names, results.loc[results[param_column] == variant, names], label=f"{param_column}={int(variant)}")
         # ax.plot(data=results.loc[results[param_column] == variant, names], label=f"{param_column}={int(variant)}")
         # Tansform dataframe so that pyplot is happy with its shape
-        ax.plot(names, results.loc[results[param_column] == variant, names].iloc[0], label=f"{param_column}={int(variant)}")
+        ax.plot(names,
+                results.loc[results[param_column] == variant, names].iloc[0],
+                marker='.',
+                label=f"{param_column}={int(variant)}")
 
     # TODO: add legend
     save_path = (Path(config.get('out', 'path'))
@@ -443,18 +446,35 @@ def save_classifier_tables(results, prefix=''):
     """
     save_dir = Path(config.get('out', 'path'))
 
+    column_map = {
+        'variance': '\\thead{Explained\\\\ variance}',
+        'pc_num': '\\thead{Number\\\\ of PCs}',
+        'k': '\\thead{Neighbors\\\\ ($k$)}',
+        'ρ': '\\thead{Kernel scale\\\\ ($\\rho$)}',
+        'acc': '\\thead{Accuracy\\\\ ($\\overline{\\text{acc}}$)}',
+        'ppv': '\\thead{Precision\\\\ ($\\overline{\\text{ppv}}$)}',
+        'tpr': '\\thead{Sensitivity\\\\ ($\\overline{\\text{tpr}}$)}',
+        'f1': ' \\thead{F\\textsubscript{1}‐measure}',
+        'tnr': '\\thead{Specificity \\\\($\\overline{\\text{tnr}}$)}',
+        'gps_upm': '\\thead{GPS}',
+        'mcc': '\\thead{MCC}'
+    }
+
     for classifier in results:
         # 00% for explained variance, 0.0000% for all other floats (performance indicators)
         floatfmt = ['.0%', 'g', 'g']
         floatfmt.extend(['.2%'] * results[classifier].shape[1])
         save_path = save_dir / Path(f"{prefix}-results-table-{classifier}.md")
+        printable = results[classifier].rename(columns=column_map)
         # UPM is an array which gets cumbersome. Exclude it since gps_upm kinda includes that info
-        results[classifier].drop(columns=['upm', 'conf_matrices', 'kfold_splits']).to_markdown(
+        printable.drop(columns=['upm', 'conf_matrices', 'kfold_splits']).to_markdown(
                                                                                buf=save_path,
                                                                                mode='wt',
                                                                                index=False,
-                                                                               tablefmt='grid',
-                                                                               floatfmt=floatfmt)
+                                                                               tablefmt='latex_raw',
+                                                                               floatfmt=floatfmt,
+                                                                               numalign=None,
+                                                                               stralign=None)
 
 
 def save_raw_results(results, prefix=''):
@@ -547,23 +567,17 @@ def main():
     tiny_data = config.getboolean('debug', 'tiny_data', fallback=False)
     data_path = config.get('data', 'path')
 
-    # eval_indicators = reproduce_paper(data_path,
-    #                                   memory,
-    #                                   config.getboolean('debug', 'verbose_pipelines', fallback=False))
-    # save_classifier_tables(eval_indicators, prefix='reproduce')
-    # save_confusion_matrices(eval_indicators, prefix='reproduce')
+    eval_indicators = reproduce_paper(data_path,
+                                      memory,
+                                      config.getboolean('debug', 'verbose_pipelines', fallback=False))
+    save_classifier_tables(eval_indicators, prefix='reproduce')
+    save_confusion_matrices(eval_indicators, prefix='reproduce')
 
     eval_indicators_noleak = reproduce_noleak(data_path,
                                               memory,
                                               config.getboolean('debug', 'verbose_pipelines', fallback=False))
     save_classifier_tables(eval_indicators_noleak, prefix='noleak')
     save_confusion_matrices(eval_indicators_noleak, prefix='noleak')
-    # save_raw_results(eval_indicators, prefix='reproduce')
-    # for method in eval_indicators:
-    #     print('=======================================================')
-    #     print(method)
-    #     print(eval_indicators[method].to_string())
-    #     print('=======================================================')
 
 
 if __name__ == '__main__':
