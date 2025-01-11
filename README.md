@@ -1,7 +1,7 @@
 # shmowt
 Structural Health Monitoring for Jacket-Type Offshore Wind Turbines.
 
-This project aims to replicate the methodology and results of the paper[1] [accessible here](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7180893/).
+This project aims to replicate the methodology and results of the paper[1] [accessible here](https://www.mdpi.com/1424-8220/20/7/1835).
 
 It also proposes a few improvements described in the companion report (unpublished).
 
